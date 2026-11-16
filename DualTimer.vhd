@@ -1,0 +1,84 @@
+library ieee;
+use ieee.std_logic_1164.all;
+
+entity DualTimer is
+    generic (
+        CLOCK_HZ : positive := 10000000
+    );
+    port (
+        SYS_CLK  : in    std_logic;
+        RESETN   : in    std_logic;
+        IO_READ  : in    std_logic;
+        IO_WRITE : in    std_logic;
+        IO_ADDR  : in    std_logic_vector(10 downto 0);
+        IO_DATA  : inout std_logic_vector(15 downto 0)
+    );
+end DualTimer;
+
+architecture rtl of DualTimer is
+    -- 10,000 cycles at 10 MHz = 1 millisecond.
+    constant CLOCKS_PER_MS : integer := CLOCK_HZ / 1000;
+    signal clock_count : integer range 0 to CLOCKS_PER_MS - 1 := 0;
+    signal tick_1ms    : std_logic := '0';
+
+    signal timer0_select : std_logic;
+    signal timer1_select : std_logic;
+    signal timer0_data   : std_logic_vector(15 downto 0);
+    signal timer1_data   : std_logic_vector(15 downto 0);
+begin
+    -- Generate one short pulse every millisecond.
+    process (SYS_CLK, RESETN)
+    begin
+        if RESETN = '0' then
+            clock_count <= 0;
+            tick_1ms <= '0';
+        elsif rising_edge(SYS_CLK) then
+            tick_1ms <= '0';
+            if clock_count = CLOCKS_PER_MS - 1 then
+                clock_count <= 0;
+                tick_1ms <= '1';
+            else
+                clock_count <= clock_count + 1;
+            end if;
+        end if;
+    end process;
+
+    -- Bits 10..3 identify the 8 addresses belonging to each timer.
+    -- Address 0x70..0x77 selects timer 0.
+    -- Address 0x78..0x7F selects timer 1.
+    timer0_select <= '1' when IO_ADDR(10 downto 3) = "00001110" else '0';
+    timer1_select <= '1' when IO_ADDR(10 downto 3) = "00001111" else '0';
+
+    -- First timer. Explicitly name the connections so they are easy to trace.
+    Timer0 : entity work.TimerChannel
+        port map (
+            SYS_CLK    => SYS_CLK,
+            RESETN     => RESETN,
+            TICK_1MS   => tick_1ms,
+            CS         => timer0_select,
+            IO_READ    => IO_READ,
+            IO_WRITE   => IO_WRITE,
+            REG_ADDR   => IO_ADDR(2 downto 0),
+            WRITE_DATA => IO_DATA,
+            READ_DATA  => timer0_data
+        );
+
+    -- Second timer: same circuit, but a different group of I/O addresses.
+    Timer1 : entity work.TimerChannel
+        port map (
+            SYS_CLK    => SYS_CLK,
+            RESETN     => RESETN,
+            TICK_1MS   => tick_1ms,
+            CS         => timer1_select,
+            IO_READ    => IO_READ,
+            IO_WRITE   => IO_WRITE,
+            REG_ADDR   => IO_ADDR(2 downto 0),
+            WRITE_DATA => IO_DATA,
+            READ_DATA  => timer1_data
+        );
+
+    -- Only one selected timer drives the shared data bus during an IN.
+    IO_DATA <= timer0_data when IO_READ = '1' and timer0_select = '1' else
+               timer1_data when IO_READ = '1' and timer1_select = '1' else
+               (others => 'Z');
+end rtl;
